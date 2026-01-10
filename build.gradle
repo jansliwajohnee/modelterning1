@@ -1,0 +1,50 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.0.1'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'ioioi.it'
+version = '1.0.0'
+description = 'ML Model Training Service'
+
+java {
+    sourceCompatibility = '17'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Spring Boot Web
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+
+    // JDBC - fastest option for bulk operations
+    implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+
+    // PostgreSQL Driver
+    implementation 'org.postgresql:postgresql'
+
+    // HikariCP (already included in spring-boot-starter-jdbc)
+    // Optimized connection pooling
+
+    // Optional: Spring Data JDBC (lighter than JPA, good for simple mappings)
+    implementation 'org.springframework.boot:spring-boot-starter-data-jdbc'
+
+    // Actuator for monitoring
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+
+    // Lombok for cleaner code
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    implementation("io.github.wuhewuhe:bybit-java-api:1.2.7")
+
+    // Testing
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}

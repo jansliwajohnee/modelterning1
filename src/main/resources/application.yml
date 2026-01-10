@@ -1,0 +1,64 @@
+spring:
+  application:
+    name: ml-training
+
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:22432/mltraining}
+    username: ${SPRING_DATASOURCE_USERNAME:johnee}
+    password: ${SPRING_DATASOURCE_PASSWORD:johneepass}
+    driver-class-name: org.postgresql.Driver
+
+    # HikariCP - optimized for high throughput
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 10
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      auto-commit: true
+      # PostgreSQL specific optimizations
+      data-source-properties:
+        cachePrepStmts: true
+        prepStmtCacheSize: 250
+        prepStmtCacheSqlLimit: 2048
+        useServerPrepStmts: true
+        reWriteBatchedInserts: true
+        # Critical for streaming large result sets
+        defaultRowFetchSize: 10000
+
+  # Data JDBC configuration (no ORM overhead)
+  data:
+    jdbc:
+      repositories:
+        enabled: true
+
+server:
+  port: 8090
+  tomcat:
+    threads:
+      max: 200
+      min-spare: 10
+    max-connections: 10000
+    accept-count: 100
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,info
+  metrics:
+    export:
+      simple:
+        enabled: true
+
+logging:
+  file:
+    path: /app/logs
+    name: /app/logs/application.log
+  pattern:
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+  level:
+    root: INFO
+    ioioi.it.mltraining: DEBUG
+    org.springframework.jdbc: DEBUG
+    com.zaxxer.hikari: DEBUG
