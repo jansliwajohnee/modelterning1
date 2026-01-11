@@ -9,7 +9,11 @@ version = '1.0.0'
 description = 'ML Model Training Service'
 
 java {
-    sourceCompatibility = '17'
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
 }
 
 repositories {
@@ -42,8 +46,8 @@ dependencies {
     implementation("io.github.wuhewuhe:bybit-java-api:1.2.7")
 
     // Ta4j - Technical Analysis for Java
-    // Version 0.16 - latest stable compatible with Java 17
-    implementation 'org.ta4j:ta4j-core:0.16'
+    // Version 0.22.0 - latest version, requires Java 21+
+    implementation 'org.ta4j:ta4j-core:0.22.0'
 
     // Testing
     testImplementation 'org.springframework.boot:spring-boot-starter-test'

@@ -5,17 +5,18 @@ import org.ta4j.core.Bar;
 import org.ta4j.core.BarSeries;
 import org.ta4j.core.BaseBar;
 import org.ta4j.core.BaseBarSeries;
+import org.ta4j.core.BaseBarSeriesBuilder;
 import org.ta4j.core.num.DecimalNum;
 import org.ta4j.core.num.Num;
 
 import java.time.Duration;
-import java.time.ZonedDateTime;
+import java.time.Instant;
 import java.util.List;
 
 /**
  * Converter utility for transforming CandleRaw entities into Ta4j BarSeries.
  * Ta4j BarSeries is required for technical indicator calculations.
- * Compatible with Ta4j 0.16 API.
+ * Compatible with Ta4j 0.22.0 API (requires Java 21+).
  */
 public final class BarSeriesConverter {
 
@@ -37,23 +38,28 @@ public final class BarSeriesConverter {
             throw new IllegalArgumentException("CandleRaw list cannot be null or empty");
         }
 
-        BarSeries series = new BaseBarSeries(symbol);
+        // Ta4j 0.22.0: Use BaseBarSeriesBuilder
+        BaseBarSeries series = new BaseBarSeriesBuilder().withName(symbol).build();
 
-        candleRaws.forEach(candle -> {
-            ZonedDateTime endTime = candle.getCloseTime();
-            Duration duration = Duration.between(candle.getOpenTime(), candle.getCloseTime());
-
-            Num open = DecimalNum.valueOf(candle.getOpen());
-            Num high = DecimalNum.valueOf(candle.getHigh());
-            Num low = DecimalNum.valueOf(candle.getLow());
-            Num close = DecimalNum.valueOf(candle.getClose());
-            Num volume = DecimalNum.valueOf(candle.getVolume());
-            Num amount = DecimalNum.valueOf(candle.getTurnover());
-
-            Bar bar = new BaseBar(duration, endTime, open, high, low, close, volume, amount);
-            series.addBar(bar);
-        });
+        candleRaws.stream()
+                .map(BarSeriesConverter::convertToBar)
+                .forEach(series::addBar);
 
         return series;
+    }
+
+    private static Bar convertToBar(CandleRaw candle) {
+        Instant beginTime = candle.getOpenTime().toInstant();
+        Instant endTime = candle.getCloseTime().toInstant();
+        Duration duration = Duration.between(beginTime, endTime);
+
+        Num open = DecimalNum.valueOf(candle.getOpen());
+        Num high = DecimalNum.valueOf(candle.getHigh());
+        Num low = DecimalNum.valueOf(candle.getLow());
+        Num close = DecimalNum.valueOf(candle.getClose());
+        Num volume = DecimalNum.valueOf(candle.getVolume());
+        Num amount = DecimalNum.valueOf(candle.getTurnover());
+
+        return new BaseBar(duration, beginTime, endTime, open, high, low, close, volume, amount, 0L);
     }
 }

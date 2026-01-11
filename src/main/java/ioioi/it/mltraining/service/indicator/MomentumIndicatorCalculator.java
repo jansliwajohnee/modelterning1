@@ -12,6 +12,7 @@ import org.ta4j.core.indicators.StochasticOscillatorDIndicator;
 import org.ta4j.core.indicators.StochasticRSIIndicator;
 import org.ta4j.core.indicators.WilliamsRIndicator;
 import org.ta4j.core.indicators.helpers.ClosePriceIndicator;
+import org.ta4j.core.indicators.volume.MoneyFlowIndexIndicator;
 
 import java.util.Optional;
 
@@ -76,14 +77,14 @@ public class MomentumIndicatorCalculator {
         // CCI normalized (divide by 100 for scaling)
         Double cciNormalized = calculateCCINormalized(series, index);
 
-        // Money Flow Index (0-100) - TODO: Manual implementation (not in Ta4j 0.16)
-        Double mfi = null;
+        // Money Flow Index (0-100)
+        Double mfi = calculateMFI(series, index);
 
         // Chande Momentum Oscillator (-100 to 100)
         Double cmo = calculateCMO(series, index);
 
-        // Ultimate Oscillator (0-100) - TODO: Manual implementation (not in Ta4j 0.16)
-        Double ultimateOscillator = null;
+        // Ultimate Oscillator (0-100) - Manual implementation
+        Double ultimateOscillator = calculateUltimateOscillator(series, index);
 
         // Rate of Change (percent)
         Double rocPercent = calculateROC(series, index);
@@ -193,6 +194,19 @@ public class MomentumIndicatorCalculator {
         }
     }
 
+    private Double calculateMFI(BarSeries series, int index) {
+        if (!hasEnoughBars(series, index, MFI_PERIOD)) {
+            return null;
+        }
+        try {
+            MoneyFlowIndexIndicator mfi = new MoneyFlowIndexIndicator(series, MFI_PERIOD);
+            return mfi.getValue(index).doubleValue();
+        } catch (Exception e) {
+            log.debug("Failed to calculate MFI at index {}: {}", index, e.getMessage());
+            return null;
+        }
+    }
+
     private Double calculateCMO(BarSeries series, int index) {
         if (!hasEnoughBars(series, index, CMO_PERIOD)) {
             return null;
@@ -205,6 +219,60 @@ public class MomentumIndicatorCalculator {
             log.debug("Failed to calculate CMO at index {}: {}", index, e.getMessage());
             return null;
         }
+    }
+
+    private Double calculateUltimateOscillator(BarSeries series, int index) {
+        if (!hasEnoughBars(series, index, ULTIMATE_OSC_LONG)) {
+            return null;
+        }
+        try {
+            // Ultimate Oscillator by Larry Williams (1976)
+            // Combines 3 timeframes to reduce false signals
+            // Formula: UO = 100 × [(4×Avg7 + 2×Avg14 + Avg28) / 7]
+
+            double avg7 = calculateBuyingPressureAverage(series, index, ULTIMATE_OSC_SHORT);
+            double avg14 = calculateBuyingPressureAverage(series, index, ULTIMATE_OSC_MEDIUM);
+            double avg28 = calculateBuyingPressureAverage(series, index, ULTIMATE_OSC_LONG);
+
+            // Weighted average: 4:2:1 ratio gives more weight to recent price action
+            double ultimateOsc = 100.0 * ((4.0 * avg7 + 2.0 * avg14 + avg28) / 7.0);
+
+            return ultimateOsc;
+        } catch (Exception e) {
+            log.debug("Failed to calculate Ultimate Oscillator at index {}: {}", index, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Calculates the buying pressure average for a given period.
+     * BP Average = Sum(BP over period) / Sum(TR over period)
+     * where BP = Buying Pressure, TR = True Range
+     */
+    private double calculateBuyingPressureAverage(BarSeries series, int endIndex, int period) {
+        double sumBP = 0.0;
+        double sumTR = 0.0;
+
+        for (int i = endIndex - period + 1; i <= endIndex; i++) {
+            if (i <= 0) continue; // Need previous bar for calculation
+
+            double close = series.getBar(i).getClosePrice().doubleValue();
+            double high = series.getBar(i).getHighPrice().doubleValue();
+            double low = series.getBar(i).getLowPrice().doubleValue();
+            double prevClose = series.getBar(i - 1).getClosePrice().doubleValue();
+
+            // Buying Pressure = Close - min(Low, Previous Close)
+            double bp = close - Math.min(low, prevClose);
+
+            // True Range = max(High, Previous Close) - min(Low, Previous Close)
+            double tr = Math.max(high, prevClose) - Math.min(low, prevClose);
+
+            sumBP += bp;
+            sumTR += tr;
+        }
+
+        // Avoid division by zero
+        return sumTR > 0.0 ? sumBP / sumTR : 0.0;
     }
 
     private Double calculateROC(BarSeries series, int index) {
