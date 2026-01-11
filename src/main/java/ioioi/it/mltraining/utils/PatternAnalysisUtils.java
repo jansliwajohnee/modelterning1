@@ -214,26 +214,40 @@ public final class PatternAnalysisUtils {
     }
 
     /**
-     * Pattern matching example using instanceof pattern matching (Java 17).
-     * This is a conceptual example showing how pattern matching could be used.
+     * Type description using instanceof pattern matching (Java 17 compatible).
+     * Uses instanceof with pattern variables for type-safe casting.
      *
      * @param obj Object to analyze
      * @return description of the object type
      */
     public static String describeObject(Object obj) {
-        return switch (obj) {
-            case null -> "Object is null";
-            case CandlestickPattern pattern -> "Pattern: " + pattern.name() +
-                    " (Strength: " + pattern.getStrength() + ")";
-            case SignalType signal -> "Signal: " + signal.getLabel();
-            case StrengthLevel strength -> "Strength: " + strength.getLabel() +
-                    " (" + strength.getWeight() + "/100)";
-            case String s when s.isEmpty() -> "Empty string";
-            case String s -> "String with length: " + s.length();
-            case Integer i when i > 0 -> "Positive integer: " + i;
-            case Integer i when i < 0 -> "Negative integer: " + i;
-            case Integer i -> "Zero";
-            default -> "Unknown type: " + obj.getClass().getSimpleName();
-        };
+        if (obj == null) {
+            return "Object is null";
+        }
+
+        // Java 17 instanceof pattern matching
+        if (obj instanceof CandlestickPattern pattern) {
+            return "Pattern: " + pattern.name() + " (Strength: " + pattern.getStrength() + ")";
+        }
+
+        if (obj instanceof SignalType signal) {
+            return "Signal: " + signal.getLabel();
+        }
+
+        if (obj instanceof StrengthLevel strength) {
+            return "Strength: " + strength.getLabel() + " (" + strength.getWeight() + "/100)";
+        }
+
+        if (obj instanceof String s) {
+            return s.isEmpty() ? "Empty string" : "String with length: " + s.length();
+        }
+
+        if (obj instanceof Integer i) {
+            if (i > 0) return "Positive integer: " + i;
+            if (i < 0) return "Negative integer: " + i;
+            return "Zero";
+        }
+
+        return "Unknown type: " + obj.getClass().getSimpleName();
     }
 }

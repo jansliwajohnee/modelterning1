@@ -105,7 +105,7 @@ public class HammerDetector implements PatternDetector {
             return false;
         }
 
-        CandleRaw currentCandle = candles.getLast(); // Java 21 feature (or candles.get(candles.size() - 1))
+        CandleRaw currentCandle = candles.get(candles.size() - 1); // Get last element (Java 17 compatible)
         CandleMetrics metrics = CandleMetrics.from(currentCandle);
 
         // Guard clause: validate metrics

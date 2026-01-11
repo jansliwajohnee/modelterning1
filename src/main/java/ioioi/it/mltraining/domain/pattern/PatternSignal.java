@@ -182,53 +182,61 @@ public sealed interface PatternSignal {
 
     /**
      * Checks if signal is bullish (reversal or continuation).
+     * Uses instanceof pattern matching (Java 17 compatible).
      *
      * @param signal The pattern signal to check
      * @return true if bullish, false otherwise
      */
     static boolean isBullish(PatternSignal signal) {
-        return switch (signal) {
-            case BullishReversal br -> true;
-            case BullishContinuation bc -> true;
-            case BearishReversal br -> false;
-            case BearishContinuation bc -> false;
-            case Indecision i -> false;
-        };
+        return signal instanceof BullishReversal || signal instanceof BullishContinuation;
     }
 
     /**
      * Checks if signal is bearish (reversal or continuation).
+     * Uses instanceof pattern matching (Java 17 compatible).
      *
      * @param signal The pattern signal to check
      * @return true if bearish, false otherwise
      */
     static boolean isBearish(PatternSignal signal) {
-        return switch (signal) {
-            case BearishReversal br -> true;
-            case BearishContinuation bc -> true;
-            case BullishReversal br -> false;
-            case BullishContinuation bc -> false;
-            case Indecision i -> false;
-        };
+        return signal instanceof BearishReversal || signal instanceof BearishContinuation;
     }
 
     /**
      * Gets a descriptive label for the signal type.
+     * Uses instanceof with pattern variables for type-safe casting.
      *
      * @param signal The pattern signal
      * @return human-readable signal description
      */
     static String getLabel(PatternSignal signal) {
-        return switch (signal) {
-            case StrongBullishReversal sbr -> "Strong Bullish Reversal";
-            case ModerateBullishReversal mbr -> "Moderate Bullish Reversal";
-            case WeakBullishReversal wbr -> "Weak Bullish Reversal";
-            case StrongBearishReversal sbr -> "Strong Bearish Reversal";
-            case ModerateBearishReversal mbr -> "Moderate Bearish Reversal";
-            case WeakBearishReversal wbr -> "Weak Bearish Reversal";
-            case BullishContinuation bc -> "Bullish Continuation";
-            case BearishContinuation bc -> "Bearish Continuation";
-            case Indecision i -> "Indecision";
-        };
+        if (signal instanceof StrongBullishReversal) {
+            return "Strong Bullish Reversal";
+        }
+        if (signal instanceof ModerateBullishReversal) {
+            return "Moderate Bullish Reversal";
+        }
+        if (signal instanceof WeakBullishReversal) {
+            return "Weak Bullish Reversal";
+        }
+        if (signal instanceof StrongBearishReversal) {
+            return "Strong Bearish Reversal";
+        }
+        if (signal instanceof ModerateBearishReversal) {
+            return "Moderate Bearish Reversal";
+        }
+        if (signal instanceof WeakBearishReversal) {
+            return "Weak Bearish Reversal";
+        }
+        if (signal instanceof BullishContinuation) {
+            return "Bullish Continuation";
+        }
+        if (signal instanceof BearishContinuation) {
+            return "Bearish Continuation";
+        }
+        if (signal instanceof Indecision) {
+            return "Indecision";
+        }
+        return "Unknown Signal";
     }
 }

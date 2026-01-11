@@ -137,7 +137,7 @@ public class CandlePatternAnalysisService {
         }
 
         String symbol = candle.getSymbol();
-        CandleInterval interval = candle.getInterval();
+        CandleInterval interval = CandleInterval.fromString(candle.getInterval());
 
         // 1. Add candle to cache
         addToCache(symbol, interval, candle);

@@ -73,7 +73,7 @@ public class HistoricalCandleService {
 
         // Sortowanie i zwracanie tylko żądanej liczby świec
         return allCandles.stream()
-                .sorted(Comparator.comparing(CandleDTO::getOpenTime))
+                .sorted(Comparator.comparing(CandleDTO::openTime))
                 .limit(numberOfCandles)
                 .toList();
     }
@@ -132,7 +132,7 @@ public class HistoricalCandleService {
 
         // Sortowanie
         return allCandles.stream()
-                .sorted(Comparator.comparing(CandleDTO::getOpenTime))
+                .sorted(Comparator.comparing(CandleDTO::openTime))
                 .toList();
     }
 }

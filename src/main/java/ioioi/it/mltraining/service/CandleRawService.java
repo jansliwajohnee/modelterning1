@@ -64,17 +64,17 @@ public class CandleRawService {
 
         SqlParameterSource[] batchParams = candles.stream()
                 .map(candle -> new MapSqlParameterSource()
-                        .addValue("symbol", candle.getSymbol())
-                        .addValue("interval", candle.getInterval().toString())
-                        .addValue("openTime", Timestamp.from(candle.getOpenTime().toInstant()))
-                        .addValue("closeTime", Timestamp.from(candle.getCloseTime().toInstant()))
-                        .addValue("open", candle.getOpen())
-                        .addValue("close", candle.getClose())
-                        .addValue("low", candle.getLow())
-                        .addValue("high", candle.getHigh())
-                        .addValue("volume", candle.getVolume())
-                        .addValue("turnover", candle.getTurnover())
-                        .addValue("isClosed", candle.getIsClosed()))
+                        .addValue("symbol", candle.symbol())
+                        .addValue("interval", candle.interval().toString())
+                        .addValue("openTime", Timestamp.from(candle.openTime().toInstant()))
+                        .addValue("closeTime", Timestamp.from(candle.closeTime().toInstant()))
+                        .addValue("open", candle.open())
+                        .addValue("close", candle.close())
+                        .addValue("low", candle.low())
+                        .addValue("high", candle.high())
+                        .addValue("volume", candle.volume())
+                        .addValue("turnover", candle.turnover())
+                        .addValue("isClosed", candle.isClosed()))
                 .toArray(SqlParameterSource[]::new);
 
         int[] results = namedParameterJdbcTemplate.batchUpdate(INSERT_SQL, batchParams);
