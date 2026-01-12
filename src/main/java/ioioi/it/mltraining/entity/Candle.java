@@ -439,6 +439,49 @@ public class Candle {
     @Column("volume_confirmation")
     private Boolean volumeConfirmation;
 
+    // ========== VOLUME PROFILE ==========
+    @Column("vp_poc_price")
+    private Double vpPocPrice;
+
+    @Column("vp_poc_index")
+    private Integer vpPocIndex;
+
+    @Column("vp_poc_volume_pct")
+    private Double vpPocVolumePct;
+
+    @Column("vp_poc_position_in_range")
+    private Double vpPocPositionInRange;
+
+    @Column("vp_vah_price")
+    private Double vpVahPrice;
+
+    @Column("vp_val_price")
+    private Double vpValPrice;
+
+    @Column("vp_value_area_pct")
+    private Double vpValueAreaPct;
+
+    @Column("vp_value_area_volume_pct")
+    private Double vpValueAreaVolumePct;
+
+    @Column("vp_volume_above_poc_pct")
+    private Double vpVolumeAbovePocPct;
+
+    @Column("vp_volume_below_poc_pct")
+    private Double vpVolumeBelowPocPct;
+
+    @Column("vp_volume_imbalance")
+    private Double vpVolumeImbalance;
+
+    @Column("vp_high_volume_nodes_count")
+    private Integer vpHighVolumeNodesCount;
+
+    @Column("vp_low_volume_nodes_count")
+    private Integer vpLowVolumeNodesCount;
+
+    @Column("vp_volume_concentration")
+    private Double vpVolumeConcentration;
+
     // ========== CANDLE PATTERNS (one-to-many) ==========
     @MappedCollection(idColumn = "candle_indicators_id")
     private Set<CandlePattern> candlePatterns;

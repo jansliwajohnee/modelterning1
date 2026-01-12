@@ -202,7 +202,23 @@ CREATE TABLE IF NOT EXISTS candle (
     bullish_patterns_ratio DOUBLE PRECISION,
     momentum_agreement DOUBLE PRECISION,
     volatility_vs_trend DOUBLE PRECISION,
-    volume_confirmation BOOLEAN
+    volume_confirmation BOOLEAN,
+
+    -- ========== VOLUME PROFILE ==========
+    vp_poc_price DOUBLE PRECISION,
+    vp_poc_index INTEGER,
+    vp_poc_volume_pct DOUBLE PRECISION,
+    vp_poc_position_in_range DOUBLE PRECISION,
+    vp_vah_price DOUBLE PRECISION,
+    vp_val_price DOUBLE PRECISION,
+    vp_value_area_pct DOUBLE PRECISION,
+    vp_value_area_volume_pct DOUBLE PRECISION,
+    vp_volume_above_poc_pct DOUBLE PRECISION,
+    vp_volume_below_poc_pct DOUBLE PRECISION,
+    vp_volume_imbalance DOUBLE PRECISION,
+    vp_high_volume_nodes_count INTEGER,
+    vp_low_volume_nodes_count INTEGER,
+    vp_volume_concentration DOUBLE PRECISION
 );
 
 -- Indexes for candle table
@@ -219,6 +235,9 @@ CREATE TABLE IF NOT EXISTS candle_pattern (
     CONSTRAINT fk_candle_pattern_candle FOREIGN KEY (candle_indicators_id) REFERENCES candle(id) ON DELETE CASCADE
 );
 
--- Index for candle pattern lookups
+-- Indexes for candle pattern lookups
 CREATE INDEX idx_candle_pattern_candle_id ON candle_pattern(candle_indicators_id);
 CREATE INDEX idx_candle_pattern_name ON candle_pattern(pattern_name);
+
+-- Unique constraint to prevent duplicate patterns for same candle
+CREATE UNIQUE INDEX idx_candle_pattern_unique ON candle_pattern(candle_indicators_id, pattern_name);

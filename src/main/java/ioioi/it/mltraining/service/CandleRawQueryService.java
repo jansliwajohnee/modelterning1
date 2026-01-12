@@ -27,6 +27,11 @@ public class CandleRawQueryService {
 
     private final NamedParameterJdbcTemplate jdbcTemplate;
 
+    private static final String COUNT_CANDLES_SQL = """
+            SELECT COUNT(*) FROM candle_raw
+            WHERE symbol = :symbol AND interval = :interval
+            """;
+
     private static final String FETCH_CANDLES_SQL = """
             SELECT id, symbol, interval, open_time, close_time, open, close, low, high, volume, turnover, is_closed
             FROM candle_raw
@@ -42,6 +47,21 @@ public class CandleRawQueryService {
             ORDER BY open_time ASC
             """;
 
+    private static final String FETCH_CANDLES_AFTER_SQL = """
+            SELECT id, symbol, interval, open_time, close_time, open, close, low, high, volume, turnover, is_closed
+            FROM candle_raw
+            WHERE symbol = :symbol AND interval = :interval AND open_time > :afterOpenTime
+            ORDER BY open_time ASC
+            LIMIT :limit
+            """;
+
+    private static final String FETCH_ALL_CANDLES_AFTER_SQL = """
+            SELECT id, symbol, interval, open_time, close_time, open, close, low, high, volume, turnover, is_closed
+            FROM candle_raw
+            WHERE symbol = :symbol AND interval = :interval AND open_time > :afterOpenTime
+            ORDER BY open_time ASC
+            """;
+
     /**
      * Fetches CandleRaw records from the database ordered from oldest to newest.
      * If limit is null, fetches all records. If limit is provided, fetches up to that many records.
@@ -52,9 +72,56 @@ public class CandleRawQueryService {
      * @return list of CandleRaw records ordered by open_time ascending
      */
     public List<CandleRaw> fetchCandleRaws(String symbol, String interval, Integer limit) {
-        return limit != null
-                ? fetchWithLimit(symbol, interval, limit)
-                : fetchAll(symbol, interval);
+        return fetchCandleRaws(symbol, interval, limit, null);
+    }
+
+    /**
+     * Fetches CandleRaw records from the database ordered from oldest to newest.
+     * Optionally fetches only records after a specific openTime.
+     *
+     * @param symbol the trading symbol (e.g., "BTCUSDT")
+     * @param interval the candle interval (e.g., "1m", "5m", "1h")
+     * @param limit optional maximum number of records to fetch (null = all records)
+     * @param afterOpenTime optional timestamp to fetch records after (null = from beginning)
+     * @return list of CandleRaw records ordered by open_time ascending
+     */
+    public List<CandleRaw> fetchCandleRaws(String symbol, String interval, Integer limit, ZonedDateTime afterOpenTime) {
+        log.info("fetchCandleRaws called with: symbol={}, interval={}, limit={}, afterOpenTime={}",
+                symbol, interval, limit, afterOpenTime);
+
+        // First, check how many records exist
+        long totalCount = countCandleRaws(symbol, interval);
+        log.info("Total CandleRaw records in database for {}/{}: {}", symbol, interval, totalCount);
+
+        if (totalCount == 0) {
+            log.warn("No CandleRaw records found in database for symbol={}, interval={}. Please populate candle_raw table first.",
+                    symbol, interval);
+            return List.of();
+        }
+
+        if (afterOpenTime != null) {
+            log.debug("Using AFTER branch (afterOpenTime is set)");
+            return limit != null
+                    ? fetchAfterWithLimit(symbol, interval, limit, afterOpenTime)
+                    : fetchAfterAll(symbol, interval, afterOpenTime);
+        } else {
+            log.debug("Using FROM BEGINNING branch (afterOpenTime is null)");
+            return limit != null
+                    ? fetchWithLimit(symbol, interval, limit)
+                    : fetchAll(symbol, interval);
+        }
+    }
+
+    /**
+     * Counts total number of CandleRaw records for given symbol and interval.
+     */
+    private long countCandleRaws(String symbol, String interval) {
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("symbol", symbol)
+                .addValue("interval", interval);
+
+        Long count = jdbcTemplate.queryForObject(COUNT_CANDLES_SQL, params, Long.class);
+        return count != null ? count : 0L;
     }
 
     /**
@@ -96,6 +163,54 @@ public class CandleRawQueryService {
         List<CandleRaw> candles = jdbcTemplate.query(FETCH_ALL_CANDLES_SQL, params, new CandleRawRowMapper());
 
         log.info("Fetched {} CandleRaw records for {}/{}", candles.size(), symbol, interval);
+        return candles;
+    }
+
+    /**
+     * Fetches limited number of CandleRaw records after a specific openTime.
+     *
+     * @param symbol the trading symbol (e.g., "BTCUSDT")
+     * @param interval the candle interval (e.g., "1m", "5m", "1h")
+     * @param limit maximum number of records to fetch
+     * @param afterOpenTime fetch records with open_time greater than this
+     * @return list of CandleRaw records ordered by open_time ascending
+     */
+    private List<CandleRaw> fetchAfterWithLimit(String symbol, String interval, int limit, ZonedDateTime afterOpenTime) {
+        log.debug("Fetching {} CandleRaw records after {} for symbol={}, interval={}",
+                limit, afterOpenTime, symbol, interval);
+
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("symbol", symbol)
+                .addValue("interval", interval)
+                .addValue("limit", limit)
+                .addValue("afterOpenTime", Timestamp.from(afterOpenTime.toInstant()));
+
+        List<CandleRaw> candles = jdbcTemplate.query(FETCH_CANDLES_AFTER_SQL, params, new CandleRawRowMapper());
+
+        log.info("Fetched {} CandleRaw records after {} for {}/{}", candles.size(), afterOpenTime, symbol, interval);
+        return candles;
+    }
+
+    /**
+     * Fetches all CandleRaw records after a specific openTime.
+     *
+     * @param symbol the trading symbol (e.g., "BTCUSDT")
+     * @param interval the candle interval (e.g., "1m", "5m", "1h")
+     * @param afterOpenTime fetch records with open_time greater than this
+     * @return list of all CandleRaw records ordered by open_time ascending
+     */
+    private List<CandleRaw> fetchAfterAll(String symbol, String interval, ZonedDateTime afterOpenTime) {
+        log.debug("Fetching all CandleRaw records after {} for symbol={}, interval={}",
+                afterOpenTime, symbol, interval);
+
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("symbol", symbol)
+                .addValue("interval", interval)
+                .addValue("afterOpenTime", Timestamp.from(afterOpenTime.toInstant()));
+
+        List<CandleRaw> candles = jdbcTemplate.query(FETCH_ALL_CANDLES_AFTER_SQL, params, new CandleRawRowMapper());
+
+        log.info("Fetched {} CandleRaw records after {} for {}/{}", candles.size(), afterOpenTime, symbol, interval);
         return candles;
     }
 
