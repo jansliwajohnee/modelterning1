@@ -51,9 +51,6 @@ public class Candle {
     @Column("turnover")
     private Double turnover;
 
-    @Column("is_closed")
-    private Boolean isClosed;
-
     // ========== MOMENTUM ==========
     @Column("rsi_7")
     private Double rsi7;

@@ -62,6 +62,14 @@ public class CandleRawQueryService {
             ORDER BY open_time ASC
             """;
 
+    private static final String FETCH_CANDLES_BEFORE_SQL = """
+            SELECT id, symbol, interval, open_time, close_time, open, close, low, high, volume, turnover, is_closed
+            FROM candle_raw
+            WHERE symbol = :symbol AND interval = :interval AND open_time <= :beforeOpenTime
+            ORDER BY open_time DESC
+            LIMIT :limit
+            """;
+
     /**
      * Fetches CandleRaw records from the database ordered from oldest to newest.
      * If limit is null, fetches all records. If limit is provided, fetches up to that many records.
@@ -73,6 +81,37 @@ public class CandleRawQueryService {
      */
     public List<CandleRaw> fetchCandleRaws(String symbol, String interval, Integer limit) {
         return fetchCandleRaws(symbol, interval, limit, null);
+    }
+
+    /**
+     * Fetches the most recent N CandleRaw records before (and including) a specific openTime.
+     * Used to get lookback buffer when resuming processing.
+     *
+     * @param symbol the trading symbol (e.g., "BTCUSDT")
+     * @param interval the candle interval (e.g., "1m", "5m", "1h")
+     * @param limit maximum number of records to fetch
+     * @param beforeOpenTime fetch records with open_time less than or equal to this
+     * @return list of CandleRaw records ordered by open_time ascending (oldest to newest)
+     */
+    public List<CandleRaw> fetchCandleRawsBefore(String symbol, String interval, int limit, ZonedDateTime beforeOpenTime) {
+        log.debug("Fetching {} CandleRaw records before/at {} for symbol={}, interval={}",
+                limit, beforeOpenTime, symbol, interval);
+
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("symbol", symbol)
+                .addValue("interval", interval)
+                .addValue("limit", limit)
+                .addValue("beforeOpenTime", Timestamp.from(beforeOpenTime.toInstant()));
+
+        // Query returns records in DESC order, so we need to reverse them
+        List<CandleRaw> candles = jdbcTemplate.query(FETCH_CANDLES_BEFORE_SQL, params, new CandleRawRowMapper());
+
+        // Reverse to get ascending order (oldest to newest)
+        List<CandleRaw> reversed = new java.util.ArrayList<>(candles);
+        java.util.Collections.reverse(reversed);
+
+        log.info("Fetched {} CandleRaw records before/at {} for {}/{}", reversed.size(), beforeOpenTime, symbol, interval);
+        return reversed;
     }
 
     /**

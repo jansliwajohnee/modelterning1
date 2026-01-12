@@ -57,7 +57,6 @@ CREATE TABLE IF NOT EXISTS candle (
     high DOUBLE PRECISION,
     volume DOUBLE PRECISION,
     turnover DOUBLE PRECISION,
-    is_closed BOOLEAN,
 
     -- ========== MOMENTUM ==========
     rsi_7 DOUBLE PRECISION,
@@ -241,3 +240,7 @@ CREATE INDEX idx_candle_pattern_name ON candle_pattern(pattern_name);
 
 -- Unique constraint to prevent duplicate patterns for same candle
 CREATE UNIQUE INDEX idx_candle_pattern_unique ON candle_pattern(candle_indicators_id, pattern_name);
+
+-- Drop is_closed column from candle table if it exists (no longer needed for processed candles)
+-- Note: is_closed remains in candle_raw table as it's part of the raw data from exchange
+ALTER TABLE candle DROP COLUMN IF EXISTS is_closed;

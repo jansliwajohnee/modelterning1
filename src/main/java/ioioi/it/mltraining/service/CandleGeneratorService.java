@@ -7,6 +7,7 @@ import ioioi.it.mltraining.service.indicator.*;
 import ioioi.it.mltraining.service.indicator.BarSeriesConverter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.ta4j.core.BarSeries;
@@ -23,14 +24,20 @@ import java.util.stream.IntStream;
  *
  * This service orchestrates the process of:
  * - Finding the latest processed candle by openTime
- * - Fetching only new CandleRaw records after the latest processed openTime
+ * - Fetching only new CandleRaw records after the latest processed openTime (in batches of 1000)
  * - Converting to Ta4j BarSeries for indicator calculations
  * - Calculating technical indicators (momentum, trend, volatility, volume, etc.)
- * - Detecting candlestick patterns
+ * - Detecting candlestick patterns (31 patterns)
  * - Persisting the enhanced Candle records with all indicators and patterns
+ *
+ * <p><b>Batch Processing:</b> Processes in batches of 1000 candles. The first batch skips the
+ * first 550 candles (starts saving from candle 550) to ensure all saved candles have complete
+ * historical data for indicators (close_percentile_500, EMA/SMA_200). Each batch fetches 550
+ * lookback buffer, 1000 new candles, and 50 lookhead buffer (for forward returns). All candles
+ * are processed for indicator calculations, but only the middle 1000 are saved. Each batch
+ * commits independently to the database.</p>
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class CandleGeneratorService {
 
@@ -38,6 +45,9 @@ public class CandleGeneratorService {
     private final CandleQueryService candleQueryService;
     private final CandlePersistenceService candlePersistenceService;
     private final CandlePatternDetector candlePatternDetector;
+
+    // Self-injection to enable @Transactional on processBatch() called from generateCandles()
+    private final CandleGeneratorService self;
 
     // Indicator calculators
     private final MomentumIndicatorCalculator momentumCalculator;
@@ -52,77 +62,274 @@ public class CandleGeneratorService {
     private final CompositeScoresCalculator compositeScoresCalculator;
     private final VolumeProfileCalculator volumeProfileCalculator;
 
+    // Constructor with self-injection (@Lazy to avoid circular dependency)
+    public CandleGeneratorService(
+            CandleRawQueryService candleRawQueryService,
+            CandleQueryService candleQueryService,
+            CandlePersistenceService candlePersistenceService,
+            CandlePatternDetector candlePatternDetector,
+            MomentumIndicatorCalculator momentumCalculator,
+            TrendIndicatorCalculator trendCalculator,
+            VolatilityIndicatorCalculator volatilityCalculator,
+            VolumeIndicatorCalculator volumeCalculator,
+            PriceActionIndicatorCalculator priceActionCalculator,
+            StatisticalIndicatorCalculator statisticalCalculator,
+            MACDIndicatorCalculator macdCalculator,
+            SupportResistanceIndicatorCalculator supportResistanceCalculator,
+            LagFeaturesCalculator lagFeaturesCalculator,
+            CompositeScoresCalculator compositeScoresCalculator,
+            VolumeProfileCalculator volumeProfileCalculator,
+            @Lazy CandleGeneratorService self) {
+        this.candleRawQueryService = candleRawQueryService;
+        this.candleQueryService = candleQueryService;
+        this.candlePersistenceService = candlePersistenceService;
+        this.candlePatternDetector = candlePatternDetector;
+        this.momentumCalculator = momentumCalculator;
+        this.trendCalculator = trendCalculator;
+        this.volatilityCalculator = volatilityCalculator;
+        this.volumeCalculator = volumeCalculator;
+        this.priceActionCalculator = priceActionCalculator;
+        this.statisticalCalculator = statisticalCalculator;
+        this.macdCalculator = macdCalculator;
+        this.supportResistanceCalculator = supportResistanceCalculator;
+        this.lagFeaturesCalculator = lagFeaturesCalculator;
+        this.compositeScoresCalculator = compositeScoresCalculator;
+        this.volumeProfileCalculator = volumeProfileCalculator;
+        this.self = self;
+    }
+
     /**
      * Generates enhanced Candle records with technical indicators from CandleRaw data.
      * Only processes new candles that haven't been processed yet (based on openTime).
+     *
+     * <p><b>Batch Processing Strategy:</b></p>
+     * <ul>
+     *   <li><b>First batch:</b> Skips first 550 candles (saved from candle 550 onwards)</li>
+     *   <li>Fetches 550 candles as lookback buffer (for indicator context)</li>
+     *   <li>Fetches 1050 new candles per batch (1000 + 50 lookhead buffer)</li>
+     *   <li>Calculates indicators for all candles (lookback + batch + lookhead = up to 1600 candles)</li>
+     *   <li>Saves only the middle 1000 candles (excluding lookback and lookhead buffers)</li>
+     *   <li>Each batch commits independently to database</li>
+     * </ul>
+     *
+     * <p><b>Why skip first 550 candles?</b> To ensure all saved candles have complete
+     * historical data for indicators: close_percentile_500 needs 500, EMA/SMA_200 need 200.
+     * The lookhead buffer (50 candles) ensures that forward-looking indicators (return_1
+     * through return_50) are calculated correctly for all saved candles.</p>
+     *
+     * <p><b>Example:</b> Batch #1 processes candles 0-1599 but saves only 550-1549
+     * (skipping first 550 for history, last 50 for lookhead).</p>
      *
      * @param symbol the trading symbol (e.g., "BTCUSDT")
      * @param interval the candle interval (e.g., "1m", "5m", "1h")
      * @param limit optional limit of candles to process (null = process all available)
      * @return generation result with statistics
      */
-    @Transactional
     public CandleGenerationResult generateCandles(String symbol, String interval, Integer limit) {
         log.info("Starting candle generation for symbol={}, interval={}, limit={}", symbol, interval, limit);
 
+        String intervalRaw = interval + "m";
+
         // 1. Check the latest processed candle's openTime
-        Optional<ZonedDateTime> latestOpenTime = candleQueryService.findLatestOpenTime(symbol, interval);
+        Optional<ZonedDateTime> latestOpenTime = candleQueryService.findLatestOpenTime(symbol, intervalRaw);
 
         ZonedDateTime afterTime = null;
         if (latestOpenTime.isPresent()) {
             afterTime = latestOpenTime.get();
             log.info("Found latest processed candle at openTime={} for {}/{}, fetching only newer candles",
-                    afterTime, symbol, interval);
+                    afterTime, symbol, intervalRaw);
         } else {
-            log.info("No processed candles found for {}/{}, starting from the oldest CandleRaw", symbol, interval);
+            log.info("No processed candles found for {}/{}, starting from the oldest CandleRaw", symbol, intervalRaw);
         }
 
-        String intervalRaw = interval + "m";
+        // Process in batches to avoid memory issues with large datasets
+        // We fetch extra candles as buffers for indicators
+        final int BATCH_SIZE = 1000;
+        final int LOOKBACK_BUFFER = 550;  // Previous candles for historical context (when resuming)
+                                          // Max required: 500 for close_percentile_500, 200 for EMA/SMA_200
+        final int LOOKHEAD_BUFFER = 50;   // Future candles for forward returns (return_1 to return_50)
+        int totalProcessed = 0;
+        int totalSaved = 0;
+        int batchNumber = 1;
+        ZonedDateTime currentAfterTime = afterTime;
 
-        // 2. Fetch CandleRaw records from database
-        // - If afterTime is null: fetch ALL candles from beginning (oldest to newest)
-        // - If afterTime is set: fetch only candles AFTER that time
-        List<CandleRaw> candleRaws = candleRawQueryService.fetchCandleRaws(
-                symbol,
-                intervalRaw,
-                limit,
-                afterTime
-        );
+        while (true) {
+            log.info("═══ Batch #{} ═══ Starting after openTime={}", batchNumber, currentAfterTime);
 
-        if (candleRaws.isEmpty()) {
-            if (afterTime == null) {
-                log.warn("No CandleRaw records found in database for symbol={}, interval={}", symbol, intervalRaw);
+            // 2a. Fetch lookback buffer for indicator context
+            // - When resuming: fetch from database (previous processed candles)
+            // - First batch: fetch from candle_raw but don't save them (need historical context)
+            List<CandleRaw> lookbackBuffer = List.of();
+            boolean isFirstBatch = (currentAfterTime == null);
+
+            if (isFirstBatch) {
+                // First batch: fetch LOOKBACK_BUFFER candles from candle_raw for context
+                // We'll process them but NOT save them (they'll be processed later with full history)
+                lookbackBuffer = candleRawQueryService.fetchCandleRaws(
+                        symbol,
+                        intervalRaw,
+                        LOOKBACK_BUFFER,
+                        null  // from beginning
+                );
+                log.info("Batch #{}: First batch - fetched {} candles for lookback context (will not be saved)",
+                        batchNumber, lookbackBuffer.size());
             } else {
-                log.info("No new CandleRaw records found after {} for symbol={}, interval={}", afterTime, symbol, intervalRaw);
+                // Resuming: fetch from database (already processed candles)
+                lookbackBuffer = candleRawQueryService.fetchCandleRawsBefore(
+                        symbol,
+                        intervalRaw,
+                        LOOKBACK_BUFFER,
+                        currentAfterTime
+                );
+                log.info("Batch #{}: Fetched {} lookback buffer candles from database (for indicator context)",
+                        batchNumber, lookbackBuffer.size());
             }
-            return new CandleGenerationResult(0, 0, 0, symbol, intervalRaw);
+
+            // 2b. Fetch new CandleRaw records from database (batch + lookhead buffer)
+            // For first batch, start AFTER the lookback buffer
+            ZonedDateTime fetchAfterTime = isFirstBatch && !lookbackBuffer.isEmpty()
+                    ? lookbackBuffer.get(lookbackBuffer.size() - 1).getOpenTime()
+                    : currentAfterTime;
+
+            List<CandleRaw> newCandleRaws = candleRawQueryService.fetchCandleRaws(
+                    symbol,
+                    intervalRaw,
+                    BATCH_SIZE + LOOKHEAD_BUFFER,
+                    fetchAfterTime
+            );
+
+            if (newCandleRaws.isEmpty()) {
+                log.info("Batch #{}: No more CandleRaw records to process", batchNumber);
+                break;
+            }
+
+            log.info("Batch #{}: Fetched {} new CandleRaw records (includes {} lookhead buffer)",
+                    batchNumber, newCandleRaws.size(), LOOKHEAD_BUFFER);
+
+            // 2c. Combine lookback buffer + new candles for processing
+            List<CandleRaw> allCandleRaws = new java.util.ArrayList<>(lookbackBuffer.size() + newCandleRaws.size());
+            allCandleRaws.addAll(lookbackBuffer);
+            allCandleRaws.addAll(newCandleRaws);
+
+            log.info("Batch #{}: Total candles for processing: {} (lookback: {}, new: {})",
+                    batchNumber, allCandleRaws.size(), lookbackBuffer.size(), newCandleRaws.size());
+
+            // Determine how many candles to actually save
+            // We skip the lookback buffer and save only new candles (up to BATCH_SIZE)
+            int candlesToSave;
+            int skipLookback = lookbackBuffer.size();
+
+            // If this is the last batch (fetched less than full batch + lookhead buffer),
+            // don't save the last LOOKHEAD_BUFFER candles because they won't have forward returns
+            boolean isLastBatch = newCandleRaws.size() < BATCH_SIZE + LOOKHEAD_BUFFER;
+            if (isLastBatch) {
+                // Save only candles that have full lookhead buffer
+                // Example: if we have 1030 new candles, save only 1030 - 50 = 980
+                candlesToSave = Math.max(0, newCandleRaws.size() - LOOKHEAD_BUFFER);
+                log.info("Batch #{}: Last batch detected - will skip last {} candles (waiting for more data for forward returns)",
+                        batchNumber, LOOKHEAD_BUFFER);
+            } else {
+                // Normal batch - save up to BATCH_SIZE
+                candlesToSave = Math.min(BATCH_SIZE, newCandleRaws.size());
+            }
+
+            // 3. Process and save batch in separate transaction (commits immediately)
+            // Using self.processBatch() to ensure Spring proxy intercepts and applies @Transactional
+            int savedCount = self.processBatch(symbol, allCandleRaws, candlesToSave, skipLookback, batchNumber);
+            totalProcessed += savedCount;
+            totalSaved += savedCount;
+
+            log.info("Batch #{}: ✓ COMMITTED {} candles to database | Progress: {} processed, {} saved",
+                    batchNumber, savedCount, totalProcessed, totalSaved);
+
+            // Update afterTime to the last SAVED candle's openTime (not the last fetched)
+            // We saved from index [skipLookback] to [skipLookback + savedCount - 1]
+            if (savedCount > 0) {
+                currentAfterTime = allCandleRaws.get(skipLookback + savedCount - 1).getOpenTime();
+            }
+
+            batchNumber++;
+
+            // If we specified a limit and reached it, stop
+            if (limit != null && totalProcessed >= limit) {
+                log.info("Reached specified limit of {} candles", limit);
+                break;
+            }
+
+            // If we saved 0 candles (last batch with insufficient lookhead buffer), stop
+            if (savedCount == 0) {
+                log.info("Batch #{}: Saved 0 candles - reached end of available data (waiting for more data for lookhead buffer)", batchNumber);
+                break;
+            }
+
+            // If this was the last batch, stop
+            if (isLastBatch) {
+                log.info("Batch #{}: Processed last batch (fetched {} candles, less than full batch + lookhead buffer)",
+                        batchNumber, newCandleRaws.size());
+                break;
+            }
         }
 
-        log.info("Processing {} new CandleRaw records", candleRaws.size());
+        log.info("═══════════════════════════════════════════════");
+        log.info("Candle generation COMPLETED");
+        log.info("Total batches: {}", batchNumber - 1);
+        log.info("Total processed: {} candles", totalProcessed);
+        log.info("Total saved: {} candles", totalSaved);
+        log.info("NOTE: First {} candles are skipped (need full historical data)", LOOKBACK_BUFFER);
+        log.info("      Last {} candles may remain unprocessed (waiting for lookhead buffer data)", LOOKHEAD_BUFFER);
+        log.info("      Add more CandleRaw data and re-run to process remaining candles");
+        log.info("═══════════════════════════════════════════════");
 
-        // 3. Convert to Ta4j BarSeries for indicator calculations
+        return new CandleGenerationResult(
+                totalProcessed,
+                totalSaved,
+                0, // We don't distinguish between insert/update in upsert
+                symbol,
+                intervalRaw
+        );
+    }
+
+    /**
+     * Processes a single batch of candles in its own transaction.
+     * This method is called by generateCandles() and ensures each batch is committed
+     * independently to the database.
+     *
+     * <p>This method processes ALL candleRaws (including lookback and lookhead buffers)
+     * to calculate indicators correctly, but only saves the middle candlesToSave candles.</p>
+     *
+     * @param symbol the trading symbol
+     * @param candleRaws list of CandleRaw records for this batch (includes lookback + new + lookhead)
+     * @param candlesToSave number of candles to actually save (excluding buffers)
+     * @param skipLookback number of lookback buffer candles to skip (0 for first batch, 550 for resume)
+     * @param batchNumber the current batch number (for logging)
+     * @return number of candles saved
+     */
+    @Transactional
+    public int processBatch(String symbol, List<CandleRaw> candleRaws, int candlesToSave, int skipLookback, int batchNumber) {
+        // Convert to Ta4j BarSeries for indicator calculations
+        // This includes the lookback and lookhead buffers, so all indicators work correctly
         BarSeries series = BarSeriesConverter.toBarSeries(candleRaws, symbol);
-        log.debug("Converted to BarSeries with {} bars", series.getBarCount());
 
-        // 4. Calculate all technical indicators for each bar
-        List<Candle> candles = IntStream.range(0, series.getBarCount())
+        // Calculate all technical indicators for each bar
+        // We calculate for all bars (including buffers) so that indicators work correctly
+        List<Candle> allCandles = IntStream.range(0, series.getBarCount())
                 .mapToObj(index -> calculateCandleWithIndicators(series, candleRaws, index))
                 .toList();
 
-        log.info("Calculated indicators for {} candles", candles.size());
+        log.info("Batch #{}: Calculated indicators for {} candles (total with buffers)",
+                batchNumber, allCandles.size());
 
-        // 5. Persist candles to database (INSERT or UPDATE)
-        int savedCount = candlePersistenceService.saveAll(candles);
+        // Save only the middle candlesToSave candles (skip lookback buffer, exclude lookhead buffer)
+        // Range: [skipLookback, skipLookback + candlesToSave)
+        List<Candle> candlesToPersist = allCandles.subList(skipLookback, skipLookback + candlesToSave);
 
-        log.info("Candle generation completed: processed={}, saved={}", candleRaws.size(), savedCount);
+        log.info("Batch #{}: Saving {} candles (skipped {} lookback, excluding {} lookhead buffer)",
+                batchNumber, candlesToPersist.size(), skipLookback, allCandles.size() - skipLookback - candlesToSave);
 
-        return new CandleGenerationResult(
-                candleRaws.size(),
-                savedCount,
-                0, // We don't distinguish between insert/update in upsert
-                symbol,
-                interval
-        );
+        // Persist candles to database (INSERT or UPDATE) - will commit at end of this method
+        int savedCount = candlePersistenceService.saveAll(candlesToPersist);
+
+        return savedCount;
     }
 
     /**
@@ -166,7 +373,6 @@ public class CandleGeneratorService {
                 raw.getHigh(),
                 raw.getVolume(),
                 raw.getTurnover(),
-                raw.getIsClosed(),
                 // Momentum indicators (14 fields)
                 momentum.rsi7(),
                 momentum.rsi14(),
