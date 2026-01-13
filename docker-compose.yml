@@ -33,7 +33,7 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/mltraining
       SPRING_DATASOURCE_USERNAME: johnee
       SPRING_DATASOURCE_PASSWORD: johneepass
-      JAVA_OPTS: "-Xms2g -Xmx4g -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+      JAVA_OPTS: "-Xms8g -Xmx10g -XX:+UseG1GC -XX:InitiatingHeapOccupancyPercent=75 -XX:MaxGCPauseMillis=200 -XX:+UseStringDeduplication"
     ports:
       - "8090:8090"
     volumes:
@@ -43,6 +43,12 @@ services:
         condition: service_healthy
     networks:
       - ml-network
+    deploy:
+      resources:
+        limits:
+          memory: 10g
+        reservations:
+          memory: 8g
     restart: unless-stopped
 
 networks:

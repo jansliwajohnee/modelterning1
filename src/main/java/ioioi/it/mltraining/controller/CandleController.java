@@ -55,4 +55,13 @@ public class CandleController {
         CandleCheckReport report = candleQueryService.checkCandles(symbol, interval);
         return ResponseEntity.ok(report);
     }
+
+    @GetMapping("/check-raw")
+    public ResponseEntity<CandleCheckReport> checkCandlesRaw(
+            @RequestParam String symbol,
+            @RequestParam String interval) {
+
+        CandleCheckReport report = candleQueryService.checkCandlesRaw(symbol, interval);
+        return ResponseEntity.ok(report);
+    }
 }

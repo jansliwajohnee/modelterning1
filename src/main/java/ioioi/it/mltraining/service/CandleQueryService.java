@@ -4,6 +4,7 @@ import ioioi.it.mltraining.dto.CandleCheckReport;
 import ioioi.it.mltraining.dto.CandleCheckReport.MissingCandleInfo;
 import ioioi.it.mltraining.dto.CandleCheckReport.NullFieldInfo;
 import ioioi.it.mltraining.entity.Candle;
+import ioioi.it.mltraining.entity.CandleRaw;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.RowMapper;
@@ -216,6 +217,28 @@ public class CandleQueryService {
     };
 
     /**
+     * Custom RowMapper for CandleRaw entity
+     */
+    private static final RowMapper<CandleRaw> CANDLE_RAW_ROW_MAPPER = (rs, rowNum) -> {
+        CandleRaw candleRaw = new CandleRaw();
+
+        candleRaw.setId(getLong(rs, "id"));
+        candleRaw.setSymbol(rs.getString("symbol"));
+        candleRaw.setInterval(rs.getString("interval"));
+        candleRaw.setOpenTime(getZonedDateTime(rs, "open_time"));
+        candleRaw.setCloseTime(getZonedDateTime(rs, "close_time"));
+        candleRaw.setOpen(getDouble(rs, "open"));
+        candleRaw.setClose(getDouble(rs, "close"));
+        candleRaw.setLow(getDouble(rs, "low"));
+        candleRaw.setHigh(getDouble(rs, "high"));
+        candleRaw.setVolume(getDouble(rs, "volume"));
+        candleRaw.setTurnover(getDouble(rs, "turnover"));
+        candleRaw.setIsClosed(getBoolean(rs, "is_closed"));
+
+        return candleRaw;
+    };
+
+    /**
      * Helper method to safely get ZonedDateTime from ResultSet
      */
     private static ZonedDateTime getZonedDateTime(ResultSet rs, String columnName) throws SQLException {
@@ -308,6 +331,12 @@ public class CandleQueryService {
             ORDER BY open_time ASC
             """;
 
+    private static final String FIND_ALL_CANDLES_RAW_SQL = """
+            SELECT * FROM candle_raw
+            WHERE symbol = :symbol AND interval = :interval
+            ORDER BY open_time ASC
+            """;
+
     /**
      * Checks candle data integrity for a given symbol and interval.
      * Validates:
@@ -355,6 +384,40 @@ public class CandleQueryService {
         return report;
     }
 
+    public CandleCheckReport checkCandlesRaw(String symbol, String interval) {
+        log.info("Checking candles raw for symbol={}, interval={}", symbol, interval);
+
+        CandleCheckReport report = new CandleCheckReport();
+        report.setSymbol(symbol);
+        report.setInterval(interval);
+
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("symbol", symbol)
+                .addValue("interval", interval);
+
+        List<CandleRaw> candlesRaw = jdbcTemplate.query(
+                FIND_ALL_CANDLES_RAW_SQL,
+                params,
+                CANDLE_RAW_ROW_MAPPER
+        );
+
+        report.setTotalCandles(candlesRaw.size());
+
+        if (candlesRaw.isEmpty()) {
+            log.info("No candles found for {}/{}", symbol, interval);
+            return report;
+        }
+
+        // Check continuity
+        Duration expectedDuration = parseInterval(interval);
+        checkContinuityRaw(candlesRaw, expectedDuration, report);
+
+        log.info("Check complete for {}/{}. Missing: {}, With nulls: {}",
+                symbol, interval, report.getMissingCandlesCount(), report.getCandlesWithNullFieldsCount());
+
+        return report;
+    }
+
     /**
      * Parses interval string to Duration.
      * Supported formats: 1m, 5m, 15m, 30m, 1h, 4h, 1d, 1w
@@ -386,6 +449,40 @@ public class CandleQueryService {
         for (int i = 0; i < candles.size() - 1; i++) {
             Candle current = candles.get(i);
             Candle next = candles.get(i + 1);
+
+            ZonedDateTime expectedNextOpenTime = current.getOpenTime().plus(expectedDuration);
+            ZonedDateTime actualNextOpenTime = next.getOpenTime();
+
+            // If there's a gap, calculate how many candles are missing
+            if (!expectedNextOpenTime.isEqual(actualNextOpenTime)) {
+                long minutesDiff = Duration.between(expectedNextOpenTime, actualNextOpenTime).toMinutes();
+                long expectedMinutes = expectedDuration.toMinutes();
+
+                if (minutesDiff > 0 && minutesDiff % expectedMinutes == 0) {
+                    // There are missing candles
+                    long missingCount = minutesDiff / expectedMinutes;
+
+                    for (int j = 0; j < missingCount; j++) {
+                        ZonedDateTime missingOpenTime = expectedNextOpenTime.plus(expectedDuration.multipliedBy(j));
+                        MissingCandleInfo info = new MissingCandleInfo();
+                        info.setExpectedOpenTime(missingOpenTime);
+                        info.setPreviousOpenTime(current.getOpenTime());
+                        info.setNextOpenTime(actualNextOpenTime);
+                        report.getMissingCandles().add(info);
+                    }
+                }
+            }
+        }
+        report.setMissingCandlesCount(report.getMissingCandles().size());
+    }
+
+    /**
+     * Checks if CandleRaw instances are continuous (no gaps in time sequence).
+     */
+    private void checkContinuityRaw(List<CandleRaw> candlesRaw, Duration expectedDuration, CandleCheckReport report) {
+        for (int i = 0; i < candlesRaw.size() - 1; i++) {
+            CandleRaw current = candlesRaw.get(i);
+            CandleRaw next = candlesRaw.get(i + 1);
 
             ZonedDateTime expectedNextOpenTime = current.getOpenTime().plus(expectedDuration);
             ZonedDateTime actualNextOpenTime = next.getOpenTime();
