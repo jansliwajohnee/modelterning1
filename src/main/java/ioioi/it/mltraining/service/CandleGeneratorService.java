@@ -4,24 +4,27 @@ import ioioi.it.mltraining.entity.Candle;
 import ioioi.it.mltraining.entity.CandlePattern;
 import ioioi.it.mltraining.entity.CandleRaw;
 import ioioi.it.mltraining.service.indicator.*;
-import ioioi.it.mltraining.service.indicator.BarSeriesConverter;
-import lombok.RequiredArgsConstructor;
+import ioioi.it.mltraining.utils.ObjectUtils;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.ta4j.core.BarSeries;
 
 import java.time.ZonedDateTime;
+import java.util.Date;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ForkJoinPool;
 import java.util.stream.IntStream;
 
 /**
  * Service responsible for generating enhanced Candle records with technical indicators
  * from raw CandleRaw data stored in the database.
- *
+ * <p>
  * This service orchestrates the process of:
  * - Finding the latest processed candle by openTime
  * - Fetching only new CandleRaw records after the latest processed openTime (in batches of 1000)
@@ -62,6 +65,12 @@ public class CandleGeneratorService {
     private final CompositeScoresCalculator compositeScoresCalculator;
     private final VolumeProfileCalculator volumeProfileCalculator;
 
+    // Parallel processing configuration
+    private final ForkJoinPool indicatorCalculationPool;
+
+    @Value("${indicator.calculation.parallel-enabled:true}")
+    private boolean parallelEnabled;
+
     // Constructor with self-injection (@Lazy to avoid circular dependency)
     public CandleGeneratorService(
             CandleRawQueryService candleRawQueryService,
@@ -79,6 +88,7 @@ public class CandleGeneratorService {
             LagFeaturesCalculator lagFeaturesCalculator,
             CompositeScoresCalculator compositeScoresCalculator,
             VolumeProfileCalculator volumeProfileCalculator,
+            @Qualifier("indicatorCalculationPool") ForkJoinPool indicatorCalculationPool,
             @Lazy CandleGeneratorService self) {
         this.candleRawQueryService = candleRawQueryService;
         this.candleQueryService = candleQueryService;
@@ -95,6 +105,7 @@ public class CandleGeneratorService {
         this.lagFeaturesCalculator = lagFeaturesCalculator;
         this.compositeScoresCalculator = compositeScoresCalculator;
         this.volumeProfileCalculator = volumeProfileCalculator;
+        this.indicatorCalculationPool = indicatorCalculationPool;
         this.self = self;
     }
 
@@ -120,9 +131,9 @@ public class CandleGeneratorService {
      * <p><b>Example:</b> Batch #1 processes candles 0-1599 but saves only 550-1549
      * (skipping first 550 for history, last 50 for lookhead).</p>
      *
-     * @param symbol the trading symbol (e.g., "BTCUSDT")
+     * @param symbol   the trading symbol (e.g., "BTCUSDT")
      * @param interval the candle interval (e.g., "1m", "5m", "1h")
-     * @param limit optional limit of candles to process (null = process all available)
+     * @param limit    optional limit of candles to process (null = process all available)
      * @return generation result with statistics
      */
     public CandleGenerationResult generateCandles(String symbol, String interval, Integer limit) {
@@ -144,9 +155,9 @@ public class CandleGeneratorService {
 
         // Process in batches to avoid memory issues with large datasets
         // We fetch extra candles as buffers for indicators
-        final int BATCH_SIZE = 1000;
+        final int BATCH_SIZE = 2000;
         final int LOOKBACK_BUFFER = 550;  // Previous candles for historical context (when resuming)
-                                          // Max required: 500 for close_percentile_500, 200 for EMA/SMA_200
+        // Max required: 500 for close_percentile_500, 200 for EMA/SMA_200
         final int LOOKHEAD_BUFFER = 50;   // Future candles for forward returns (return_1 to return_50)
         int totalProcessed = 0;
         int totalSaved = 0;
@@ -297,11 +308,11 @@ public class CandleGeneratorService {
      * <p>This method processes ALL candleRaws (including lookback and lookhead buffers)
      * to calculate indicators correctly, but only saves the middle candlesToSave candles.</p>
      *
-     * @param symbol the trading symbol
-     * @param candleRaws list of CandleRaw records for this batch (includes lookback + new + lookhead)
+     * @param symbol        the trading symbol
+     * @param candleRaws    list of CandleRaw records for this batch (includes lookback + new + lookhead)
      * @param candlesToSave number of candles to actually save (excluding buffers)
-     * @param skipLookback number of lookback buffer candles to skip (0 for first batch, 550 for resume)
-     * @param batchNumber the current batch number (for logging)
+     * @param skipLookback  number of lookback buffer candles to skip (0 for first batch, 550 for resume)
+     * @param batchNumber   the current batch number (for logging)
      * @return number of candles saved
      */
     @Transactional
@@ -310,14 +321,55 @@ public class CandleGeneratorService {
         // This includes the lookback and lookhead buffers, so all indicators work correctly
         BarSeries series = BarSeriesConverter.toBarSeries(candleRaws, symbol);
 
+        long time1 = System.currentTimeMillis();
+
+        System.out.println("\n==========\n\nStart calculate indicators: " + new Date());
+        log.info("Batch #{}: Starting {} indicator calculation for {} candles",
+                batchNumber, parallelEnabled ? "PARALLEL" : "SEQUENTIAL", series.getBarCount());
+
         // Calculate all technical indicators for each bar
         // We calculate for all bars (including buffers) so that indicators work correctly
-        List<Candle> allCandles = IntStream.range(0, series.getBarCount())
-                .mapToObj(index -> calculateCandleWithIndicators(series, candleRaws, index))
-                .toList();
+        // Parallel processing: each candle is calculated independently across multiple CPU cores
+        List<Candle> allCandles;
 
-        log.info("Batch #{}: Calculated indicators for {} candles (total with buffers)",
-                batchNumber, allCandles.size());
+        if (parallelEnabled) {
+            try {
+                // Use dedicated ForkJoinPool to isolate from common pool
+                // This enables parallel processing across all available CPU cores
+                allCandles = indicatorCalculationPool.submit(() ->
+                        IntStream.range(0, series.getBarCount())
+                                .parallel()  // Enable parallel processing
+                                .mapToObj(index -> calculateCandleWithIndicators(series, candleRaws, index))
+                                .toList()
+                ).join();  // Wait for completion
+                log.debug("Batch #{}: Parallel indicator calculation completed successfully", batchNumber);
+            } catch (Exception e) {
+                log.error("Batch #{}: Parallel indicator calculation failed, falling back to sequential", batchNumber, e);
+                // Fallback to sequential processing on error
+                allCandles = IntStream.range(0, series.getBarCount())
+                        .mapToObj(index -> calculateCandleWithIndicators(series, candleRaws, index))
+                        .toList();
+            }
+        } else {
+            // Sequential processing (for debugging/testing)
+            allCandles = IntStream.range(0, series.getBarCount())
+                    .mapToObj(index -> calculateCandleWithIndicators(series, candleRaws, index))
+                    .toList();
+        }
+
+        long duration = (System.currentTimeMillis() - time1) / 1000;
+        double candlesPerSecond = duration > 0 ? (double) allCandles.size() / duration : allCandles.size();
+
+        System.out.println("End calculate indicators: " + new Date() + "\\n=================");
+        System.out.printf("""
+                Duration: %d s
+                Throughput: %.2f candles/sec
+                Mode: %s
+                """, duration, candlesPerSecond, parallelEnabled ? "PARALLEL" : "SEQUENTIAL");
+
+        log.info("Batch #{}: Calculated indicators for {} candles in {} seconds ({} mode, {:.2f} candles/sec)",
+                batchNumber, allCandles.size(), duration,
+                parallelEnabled ? "PARALLEL" : "SEQUENTIAL", candlesPerSecond);
 
         // Save only the middle candlesToSave candles (skip lookback buffer, exclude lookhead buffer)
         // Range: [skipLookback, skipLookback + candlesToSave)
@@ -339,9 +391,6 @@ public class CandleGeneratorService {
      * @param value the Double value that may be null
      * @return 0.0 if value is null, otherwise the original value
      */
-    private Double nvl(Double value) {
-        return value != null ? value : 0.0;
-    }
 
     /**
      * Converts null Integer values to 0 to prevent null fields in database.
@@ -366,9 +415,9 @@ public class CandleGeneratorService {
     /**
      * Calculates all technical indicators for a single candle and creates Candle entity.
      *
-     * @param series the Ta4j BarSeries
+     * @param series     the Ta4j BarSeries
      * @param candleRaws original CandleRaw data
-     * @param index the bar index in the series
+     * @param index      the bar index in the series
      * @return Candle entity with all indicators populated
      */
     private Candle calculateCandleWithIndicators(BarSeries series, List<CandleRaw> candleRaws, int index) {
@@ -390,7 +439,7 @@ public class CandleGeneratorService {
         // Detect candlestick patterns (FK will be set automatically by Spring Data JDBC)
         Set<CandlePattern> patterns = candlePatternDetector.detectPatterns(series, index, null);
 
-        // Map all indicators to Candle entity (all null values converted to 0)
+        // Map all indicators to Candle entity
         return new Candle(
                 null, // id will be generated or updated
                 // Raw data
@@ -405,155 +454,155 @@ public class CandleGeneratorService {
                 raw.getVolume(),
                 raw.getTurnover(),
                 // Momentum indicators (14 fields)
-                nvl(momentum.rsi7()),
-                nvl(momentum.rsi14()),
-                nvl(momentum.rsi21()),
-                nvl(momentum.stochasticK()),
-                nvl(momentum.stochasticD()),
-                nvl(momentum.stochasticRsi()),
-                nvl(momentum.williamsR()),
-                nvl(momentum.cciNormalized()),
-                nvl(momentum.mfi()),
-                nvl(momentum.cmo()),
-                nvl(momentum.ultimateOscillator()),
-                nvl(momentum.rocPercent()),
-                nvl(momentum.rsiDistanceFrom50()),
-                nvl(momentum.rsiSlope()),
+                momentum.rsi7(),
+                momentum.rsi14(),
+                momentum.rsi21(),
+                momentum.stochasticK(),
+                momentum.stochasticD(),
+                momentum.stochasticRsi(),
+                momentum.williamsR(),
+                momentum.cciNormalized(),
+                momentum.mfi(),
+                momentum.cmo(),
+                momentum.ultimateOscillator(),
+                momentum.rocPercent(),
+                momentum.rsiDistanceFrom50(),
+                momentum.rsiSlope(),
                 // Trend indicators (22 fields)
-                nvl(trend.closeEma8DistancePct()),
-                nvl(trend.closeEma21DistancePct()),
-                nvl(trend.closeEma50DistancePct()),
-                nvl(trend.closeEma100DistancePct()),
-                nvl(trend.closeEma200DistancePct()),
-                nvl(trend.closeSma20DistancePct()),
-                nvl(trend.closeSma50DistancePct()),
-                nvl(trend.closeSma200DistancePct()),
-                nvl(trend.closeVwmaDistancePct()),
-                nvl(trend.closeHmaDistancePct()),
-                nvl(trend.ema8Ema21SpreadPct()),
-                nvl(trend.ema21Ema50SpreadPct()),
-                nvl(trend.ema50Ema200SpreadPct()),
-                nvl(trend.adx()),
-                nvl(trend.plusDi()),
-                nvl(trend.minusDi()),
-                nvl(trend.diSpreadNormalized()),
-                nvl(trend.aroonUp()),
-                nvl(trend.aroonDown()),
-                nvl(trend.aroonOscillator()),
-                nvl(trend.linearRegressionSlopePct()),
-                nvl(trend.maSlopePct()),
+                trend.closeEma8DistancePct(),
+                trend.closeEma21DistancePct(),
+                trend.closeEma50DistancePct(),
+                trend.closeEma100DistancePct(),
+                trend.closeEma200DistancePct(),
+                trend.closeSma20DistancePct(),
+                trend.closeSma50DistancePct(),
+                trend.closeSma200DistancePct(),
+                trend.closeVwmaDistancePct(),
+                trend.closeHmaDistancePct(),
+                trend.ema8Ema21SpreadPct(),
+                trend.ema21Ema50SpreadPct(),
+                trend.ema50Ema200SpreadPct(),
+                trend.adx(),
+                trend.plusDi(),
+                trend.minusDi(),
+                trend.diSpreadNormalized(),
+                trend.aroonUp(),
+                trend.aroonDown(),
+                trend.aroonOscillator(),
+                trend.linearRegressionSlopePct(),
+                trend.maSlopePct(),
                 // Volatility indicators (12 fields)
-                nvl(volatility.atrPct()),
-                nvl(volatility.atr721Ratio()),
-                nvl(volatility.bbPercentB()),
-                nvl(volatility.bbWidthPct()),
-                nvl(volatility.bbPosition()),
-                nvl(volatility.keltnerPercentK()),
-                nvl(volatility.keltnerWidthPct()),
-                nvl(volatility.rangePct()),
-                nvl(volatility.rangeAtrRatio()),
-                nvl(volatility.atrPercentile()),
-                nvl(volatility.stddevPct()),
-                nvl(volatility.stddev1450Ratio()),
+                volatility.atrPct(),
+                volatility.atr721Ratio(),
+                volatility.bbPercentB(),
+                volatility.bbWidthPct(),
+                volatility.bbPosition(),
+                volatility.keltnerPercentK(),
+                volatility.keltnerWidthPct(),
+                volatility.rangePct(),
+                volatility.rangeAtrRatio(),
+                volatility.atrPercentile(),
+                volatility.stddevPct(),
+                volatility.stddev1450Ratio(),
                 // Volume indicators (9 fields)
-                nvl(volume.rvolSma20()),
-                nvl(volume.rvolSma50()),
-                nvl(volume.volumePercentile()),
-                nvl(volume.volumeNormalized()),
-                nvl(volume.obvChangePct()),
-                nvl(volume.cmf()),
-                nvl(volume.volumeRocPct()),
-                nvl(volume.upVolumeRatio()),
-                nvl(volume.volumePressure()),
+                volume.rvolSma20(),
+                volume.rvolSma50(),
+                volume.volumePercentile(),
+                volume.volumeNormalized(),
+                volume.obvChangePct(),
+                volume.cmf(),
+                ObjectUtils.nvl(volume.volumeRocPct()),
+                volume.upVolumeRatio(),
+                volume.volumePressure(),
                 // Price action indicators (20 fields)
-                nvl(priceAction.bodyRangeRatio()),
-                nvl(priceAction.upperWickRangeRatio()),
-                nvl(priceAction.lowerWickRangeRatio()),
-                nvl(priceAction.closePositionInRange()),
-                nvl(priceAction.bodyPct()),
-                nvl(priceAction.gapPct()),
-                nvl(priceAction.isBullish()),
-                nvl(priceAction.return1()),
-                nvl(priceAction.return3()),
-                nvl(priceAction.return5()),
-                nvl(priceAction.return10()),
-                nvl(priceAction.return20()),
-                nvl(priceAction.return50()),
-                nvl(priceAction.highestHighDistancePct()),
-                nvl(priceAction.lowestLowDistancePct()),
-                nvl(priceAction.positionInRangeN()),
-                nvl(priceAction.consecutiveBullishRatio()),
-                nvl(priceAction.consecutiveBearishRatio()),
-                nvl(priceAction.higherHighsRatio()),
-                nvl(priceAction.higherClosesRatio()),
+                priceAction.bodyRangeRatio(),
+                priceAction.upperWickRangeRatio(),
+                priceAction.lowerWickRangeRatio(),
+                priceAction.closePositionInRange(),
+                priceAction.bodyPct(),
+                priceAction.gapPct(),
+                priceAction.isBullish(),
+                priceAction.return1(),
+                priceAction.return3(),
+                priceAction.return5(),
+                priceAction.return10(),
+                priceAction.return20(),
+                priceAction.return50(),
+                priceAction.highestHighDistancePct(),
+                priceAction.lowestLowDistancePct(),
+                priceAction.positionInRangeN(),
+                priceAction.consecutiveBullishRatio(),
+                priceAction.consecutiveBearishRatio(),
+                priceAction.higherHighsRatio(),
+                priceAction.higherClosesRatio(),
                 // Statistical indicators (10 fields)
-                nvl(statistical.closePercentile100()),
-                nvl(statistical.closePercentile500()),
-                nvl(statistical.closeZscore20()),
-                nvl(statistical.rsiPercentile()),
-                nvl(statistical.volumePercentileStat()),
-                nvl(statistical.atrPercentileStat()),
-                nvl(statistical.skewnessReturns()),
-                nvl(statistical.kurtosisReturns()),
-                nvl(statistical.drawdownPct()),
-                nvl(statistical.drawupPct()),
+                statistical.closePercentile100(),
+                statistical.closePercentile500(),
+                statistical.closeZscore20(),
+                statistical.rsiPercentile(),
+                statistical.volumePercentileStat(),
+                statistical.atrPercentileStat(),
+                statistical.skewnessReturns(),
+                statistical.kurtosisReturns(),
+                statistical.drawdownPct(),
+                statistical.drawupPct(),
                 // MACD indicators (6 fields)
-                nvl(macd.macdPct()),
-                nvl(macd.macdSignalPct()),
-                nvl(macd.macdHistogramPct()),
-                nvl(macd.macdHistogramChange()),
-                nvl(macd.macdGtSignal()),
-                nvl(macd.macdGtZero()),
+                macd.macdPct(),
+                macd.macdSignalPct(),
+                macd.macdHistogramPct(),
+                macd.macdHistogramChange(),
+                macd.macdGtSignal(),
+                macd.macdGtZero(),
                 // Support/Resistance indicators (8 fields)
-                nvl(supportResistance.closePivotDistancePct()),
-                nvl(supportResistance.closeS1DistancePct()),
-                nvl(supportResistance.closeR1DistancePct()),
-                nvl(supportResistance.closePrevDayHighPct()),
-                nvl(supportResistance.closePrevDayLowPct()),
-                nvl(supportResistance.closePrevWeekHighPct()),
-                nvl(supportResistance.closeRoundNumberDistancePct()),
-                nvl(supportResistance.closeVwapDistancePct()),
+                supportResistance.closePivotDistancePct(),
+                supportResistance.closeS1DistancePct(),
+                supportResistance.closeR1DistancePct(),
+                supportResistance.closePrevDayHighPct(),
+                supportResistance.closePrevDayLowPct(),
+                supportResistance.closePrevWeekHighPct(),
+                supportResistance.closeRoundNumberDistancePct(),
+                supportResistance.closeVwapDistancePct(),
                 // Lag features (19 fields)
-                nvl(lagFeatures.returnLag1()),
-                nvl(lagFeatures.returnLag2()),
-                nvl(lagFeatures.returnLag3()),
-                nvl(lagFeatures.returnLag5()),
-                nvl(lagFeatures.returnLag10()),
-                nvl(lagFeatures.rsiLag1()),
-                nvl(lagFeatures.rsiLag2()),
-                nvl(lagFeatures.rsiLag3()),
-                nvl(lagFeatures.rsiChange()),
-                nvl(lagFeatures.atrPctLag1()),
-                nvl(lagFeatures.atrPctLag2()),
-                nvl(lagFeatures.rvolLag1()),
-                nvl(lagFeatures.rvolLag2()),
-                nvl(lagFeatures.bbPercentBLag1()),
-                nvl(lagFeatures.bbPercentBLag2()),
-                nvl(lagFeatures.adxLag1()),
-                nvl(lagFeatures.adxLag2()),
-                nvl(lagFeatures.bodyPctLag1()),
-                nvl(lagFeatures.bodyPctLag2()),
+                lagFeatures.returnLag1(),
+                lagFeatures.returnLag2(),
+                lagFeatures.returnLag3(),
+                lagFeatures.returnLag5(),
+                lagFeatures.returnLag10(),
+                lagFeatures.rsiLag1(),
+                lagFeatures.rsiLag2(),
+                lagFeatures.rsiLag3(),
+                lagFeatures.rsiChange(),
+                lagFeatures.atrPctLag1(),
+                lagFeatures.atrPctLag2(),
+                lagFeatures.rvolLag1(),
+                lagFeatures.rvolLag2(),
+                lagFeatures.bbPercentBLag1(),
+                lagFeatures.bbPercentBLag2(),
+                lagFeatures.adxLag1(),
+                lagFeatures.adxLag2(),
+                lagFeatures.bodyPctLag1(),
+                lagFeatures.bodyPctLag2(),
                 // Composite scores (5 fields)
-                nvl(compositeScores.trendScore()),
-                nvl(compositeScores.bullishPatternsRatio()),
-                nvl(compositeScores.momentumAgreement()),
-                nvl(compositeScores.volatilityVsTrend()),
-                nvl(compositeScores.volumeConfirmation()),
+                compositeScores.trendScore(),
+                compositeScores.bullishPatternsRatio(),
+                compositeScores.momentumAgreement(),
+                compositeScores.volatilityVsTrend(),
+                compositeScores.volumeConfirmation(),
                 // Volume Profile indicators (14 fields)
-                nvl(volumeProfile.pocPrice()),
-                nvl(volumeProfile.pocIndex()),
-                nvl(volumeProfile.pocVolumePct()),
-                nvl(volumeProfile.pocPositionInRange()),
-                nvl(volumeProfile.vahPrice()),
-                nvl(volumeProfile.valPrice()),
-                nvl(volumeProfile.valueAreaPct()),
-                nvl(volumeProfile.valueAreaVolumePct()),
-                nvl(volumeProfile.volumeAbovePocPct()),
-                nvl(volumeProfile.volumeBelowPocPct()),
-                nvl(volumeProfile.volumeImbalance()),
-                nvl(volumeProfile.highVolumeNodesCount()),
-                nvl(volumeProfile.lowVolumeNodesCount()),
-                nvl(volumeProfile.volumeConcentration()),
+                ObjectUtils.nvl(volumeProfile.pocPrice()),
+                ObjectUtils.nvl(volumeProfile.pocIndex()),
+                ObjectUtils.nvl(volumeProfile.pocVolumePct()),
+                ObjectUtils.nvl(volumeProfile.pocPositionInRange()),
+                ObjectUtils.nvl(volumeProfile.vahPrice()),
+                ObjectUtils.nvl(volumeProfile.valPrice()),
+                ObjectUtils.nvl(volumeProfile.valueAreaPct()),
+                ObjectUtils.nvl(volumeProfile.valueAreaVolumePct()),
+                ObjectUtils.nvl(volumeProfile.volumeAbovePocPct()),
+                ObjectUtils.nvl(volumeProfile.volumeBelowPocPct()),
+                ObjectUtils.nvl(volumeProfile.volumeImbalance()),
+                ObjectUtils.nvl(volumeProfile.highVolumeNodesCount()),
+                ObjectUtils.nvl(volumeProfile.lowVolumeNodesCount()),
+                ObjectUtils.nvl(volumeProfile.volumeConcentration()),
                 // Candle patterns
                 patterns
         );
@@ -564,9 +613,9 @@ public class CandleGeneratorService {
      *
      * @param processed total number of CandleRaw records processed
      * @param generated number of new Candle records created
-     * @param updated number of existing Candle records updated
-     * @param symbol the trading symbol
-     * @param interval the candle interval
+     * @param updated   number of existing Candle records updated
+     * @param symbol    the trading symbol
+     * @param interval  the candle interval
      */
     public record CandleGenerationResult(
             int processed,
@@ -574,5 +623,6 @@ public class CandleGeneratorService {
             int updated,
             String symbol,
             String interval
-    ) {}
+    ) {
+    }
 }

@@ -71,9 +71,9 @@ public class VolumeProfileCalculator {
             }
         }
 
-        double volumeAbovePocPct = volume > 0 ? (volumeAbovePoc / volume) * 100.0 : null;
-        double volumeBelowPocPct = volume > 0 ? (volumeBelowPoc / volume) * 100.0 : null;
-        double volumeImbalance = volume > 0 ? (volumeAbovePoc - volumeBelowPoc) / volume : null;
+        double volumeAbovePocPct = volume > 0 ? (volumeAbovePoc / volume) * 100.0 : 0.0;
+        double volumeBelowPocPct = volume > 0 ? (volumeBelowPoc / volume) * 100.0 : 0.0;
+        double volumeImbalance = volume > 0 ? (volumeAbovePoc - volumeBelowPoc) / volume : 0.0;
 
         // Count high and low volume nodes
         double avgVolume = volume / PRICE_LEVELS;
@@ -232,7 +232,7 @@ public class VolumeProfileCalculator {
      * Lower value = more distributed (volume spread across many levels)
      */
     private Double calculateVolumeConcentration(double[] volumeProfile, double totalVolume) {
-        if (totalVolume <= 0) return null;
+        if (totalVolume <= 0) return 0.0;
 
         double sumOfSquares = 0.0;
         for (double vol : volumeProfile) {
@@ -249,8 +249,8 @@ public class VolumeProfileCalculator {
 
     private VolumeProfileIndicators createEmptyIndicators() {
         return new VolumeProfileIndicators(
-                null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null
+                0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0, 0, 0.0
         );
     }
 

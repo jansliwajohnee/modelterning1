@@ -51,6 +51,19 @@ management:
       simple:
         enabled: true
 
+# Indicator Calculation Performance Configuration
+indicator:
+  calculation:
+    # Number of parallel threads for indicator calculations
+    # Default: all available processors
+    # Recommendation: (processors - 2) for production to leave headroom for system tasks
+    # For debugging: set to 1 or disable parallel-enabled
+    parallelism: 12
+
+    # Enable/disable parallel processing
+    # Set to false for debugging or to force sequential processing
+    parallel-enabled: true
+
 logging:
   file:
     path: /app/logs

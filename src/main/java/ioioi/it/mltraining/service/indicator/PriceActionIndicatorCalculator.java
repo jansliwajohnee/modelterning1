@@ -45,18 +45,18 @@ public class PriceActionIndicatorCalculator {
 
         // Candle body and wick calculations
         double bodySize = Math.abs(close - open);
-        Double bodyRangeRatio = range > 0.0 ? bodySize / range : null;
+        Double bodyRangeRatio = range > 0.0 ? bodySize / range : 0.0;
 
         double upperWick = high - Math.max(open, close);
-        Double upperWickRangeRatio = range > 0.0 ? upperWick / range : null;
+        Double upperWickRangeRatio = range > 0.0 ? upperWick / range : 0.0;
 
         double lowerWick = Math.min(open, close) - low;
-        Double lowerWickRangeRatio = range > 0.0 ? lowerWick / range : null;
+        Double lowerWickRangeRatio = range > 0.0 ? lowerWick / range : 0.0;
 
-        Double closePositionInRange = range > 0.0 ? (close - low) / range : null;
+        Double closePositionInRange = range > 0.0 ? (close - low) / range : 0.0;
 
         // Body as percentage of price
-        Double bodyPct = close > 0.0 ? (bodySize / close) * 100.0 : null;
+        Double bodyPct = close > 0.0 ? (bodySize / close) * 100.0 : 0.0;
 
         // Gap from previous close
         Double gapPct = calculateGapPct(series, index, open);
