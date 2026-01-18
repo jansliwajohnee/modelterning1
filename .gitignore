@@ -37,3 +37,6 @@ out/
 
 ### Docker ###
 postgres_data/
+
+### ML Training Data ###
+generated/

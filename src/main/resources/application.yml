@@ -64,6 +64,10 @@ indicator:
     # Set to false for debugging or to force sequential processing
     parallel-enabled: true
 
+ml:
+  training:
+    data-path: ${ML_TRAINING_DATA_PATH:./generated}
+
 logging:
   file:
     path: /app/logs

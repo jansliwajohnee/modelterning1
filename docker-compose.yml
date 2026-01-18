@@ -33,11 +33,13 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/mltraining
       SPRING_DATASOURCE_USERNAME: johnee
       SPRING_DATASOURCE_PASSWORD: johneepass
+      ML_TRAINING_DATA_PATH: /app/ml-data
       JAVA_OPTS: "-Xms8g -Xmx10g -XX:+UseG1GC -XX:InitiatingHeapOccupancyPercent=75 -XX:MaxGCPauseMillis=200 -XX:+UseStringDeduplication"
     ports:
       - "8090:8090"
     volumes:
       - app_logs:/app/logs
+      - ml_training_data:/app/ml-data
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,3 +60,4 @@ networks:
 volumes:
   postgres_data:
   app_logs:
+  ml_training_data:
